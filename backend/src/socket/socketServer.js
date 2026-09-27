@@ -135,6 +135,25 @@ export function initSocketServer(httpServer) {
     },
 
     transports: ['polling', 'websocket'],
+
+    /* ----------------------------------------------------------
+       FIX: Faster disconnect detection.
+
+       Socket.io's defaults (pingInterval: 25000, pingTimeout: 20000)
+       mean the SERVER can take up to ~45 seconds to realise a
+       socket has actually gone away (mobile network drop, tab
+       backgrounded, screen locked, hotspot hiccup, etc).
+
+       During that window, the guest's stale slot is still counted
+       against MAX_DEVICES_PER_ROOM, so if they try to rejoin
+       quickly they can incorrectly get "Room is full" even though
+       the old connection is dead. Shortening these values makes
+       the server detect the drop in a few seconds instead, so a
+       quick rejoin (which is exactly the mobile hotspot scenario
+       here) works reliably.
+    ---------------------------------------------------------- */
+    pingInterval: 5000,
+    pingTimeout: 8000,
   });
 
   /* ==========================================================
@@ -337,6 +356,10 @@ export function initSocketServer(httpServer) {
                       user.socketId
                   )
               );
+
+            logger.info(
+              `Room ${code}: cleared ${staleUsers.length} stale user(s) before join check`
+            );
           }
 
           /* Already member */
