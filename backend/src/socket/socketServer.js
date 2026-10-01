@@ -225,7 +225,8 @@ export function initSocketServer(httpServer) {
           };
 
           if (
-            typeof callback === 'function'
+            typeof callback ===
+            'function'
           ) {
             callback(payload);
           }
@@ -240,12 +241,194 @@ export function initSocketServer(httpServer) {
           );
 
           if (
-            typeof callback === 'function'
+            typeof callback ===
+            'function'
           ) {
             callback({
               success: false,
               message:
                 'Failed to create room',
+            });
+          }
+        }
+      }
+    );
+
+    /* ========================================================
+       CHECK ROOM
+
+       This only checks whether the room exists
+       and whether another device can join it.
+
+       IMPORTANT:
+       This does NOT join the socket to the room.
+    ======================================================== */
+
+    socket.on(
+      'check-room',
+      (
+        {
+          roomCode,
+        } = {},
+        callback
+      ) => {
+        try {
+          const code =
+            (roomCode || '')
+              .toUpperCase()
+              .trim();
+
+          const fail = (message) => {
+            if (
+              typeof callback ===
+              'function'
+            ) {
+              callback({
+                success: false,
+                message,
+              });
+            }
+          };
+
+          /* -----------------------------------------------
+             Validate room code
+          ----------------------------------------------- */
+
+          if (!code) {
+            return fail(
+              'Please enter a room code.'
+            );
+          }
+
+          /* -----------------------------------------------
+             Find room
+          ----------------------------------------------- */
+
+          const room =
+            rooms.get(code);
+
+          if (!room) {
+            return fail(
+              'This room does not exist or has expired.'
+            );
+          }
+
+          /* -----------------------------------------------
+             Check expiry
+          ----------------------------------------------- */
+
+          if (
+            Date.now() >
+            room.expiresAt
+          ) {
+            if (room._deleteTimer) {
+              clearTimeout(
+                room._deleteTimer
+              );
+            }
+
+            rooms.delete(code);
+
+            logger.info(
+              `Expired room ${code} removed during check`
+            );
+
+            return fail(
+              'Room has expired.'
+            );
+          }
+
+          /* -----------------------------------------------
+             Remove stale users
+          ----------------------------------------------- */
+
+          const staleUsers =
+            room.users.filter((user) => {
+              const connectedSocket =
+                io.sockets.sockets.get(
+                  user.socketId
+                );
+
+              return (
+                !connectedSocket ||
+                !connectedSocket.connected
+              );
+            });
+
+          if (
+            staleUsers.length > 0
+          ) {
+            room.users =
+              room.users.filter(
+                (user) =>
+                  !staleUsers.some(
+                    (stale) =>
+                      stale.socketId ===
+                      user.socketId
+                  )
+              );
+
+            logger.info(
+              `Removed ${staleUsers.length} stale user(s) from room ${code}`
+            );
+          }
+
+          /* -----------------------------------------------
+             Check lock
+          ----------------------------------------------- */
+
+          if (room.locked) {
+            return fail(
+              'The host has locked this room.'
+            );
+          }
+
+          /* -----------------------------------------------
+             Check capacity
+          ----------------------------------------------- */
+
+          if (
+            room.users.length >=
+            env.MAX_DEVICES_PER_ROOM
+          ) {
+            return fail(
+              'Room is full.'
+            );
+          }
+
+          /* -----------------------------------------------
+             Room is available
+          ----------------------------------------------- */
+
+          cancelRoomDeletion(code);
+
+          logger.info(
+            `Room check successful: ${code} (${room.users.length}/${env.MAX_DEVICES_PER_ROOM})`
+          );
+
+          if (
+            typeof callback ===
+            'function'
+          ) {
+            callback({
+              success: true,
+
+              room: publicRoom(room),
+            });
+          }
+        } catch (err) {
+          logger.error(
+            `check-room error: ${err.message}`
+          );
+
+          if (
+            typeof callback ===
+            'function'
+          ) {
+            callback({
+              success: false,
+              message:
+                'Failed to check room',
             });
           }
         }
@@ -288,11 +471,19 @@ export function initSocketServer(httpServer) {
             }
           };
 
+          /* -----------------------------------------------
+             Room does not exist
+          ----------------------------------------------- */
+
           if (!room) {
             return fail(
               'This room does not exist or has expired.'
             );
           }
+
+          /* -----------------------------------------------
+             Check expiry
+          ----------------------------------------------- */
 
           if (
             Date.now() >
@@ -307,7 +498,9 @@ export function initSocketServer(httpServer) {
 
           cancelRoomDeletion(code);
 
-          /* Remove stale users */
+          /* -----------------------------------------------
+             Remove stale users
+          ----------------------------------------------- */
 
           const staleUsers =
             room.users.filter((user) => {
@@ -336,7 +529,9 @@ export function initSocketServer(httpServer) {
               );
           }
 
-          /* Already member */
+          /* -----------------------------------------------
+             Already member
+          ----------------------------------------------- */
 
           const alreadyMember =
             room.users.find(
@@ -361,12 +556,18 @@ export function initSocketServer(httpServer) {
             return;
           }
 
-          /* Returning host */
+          /* -----------------------------------------------
+             Returning host
+          ----------------------------------------------- */
 
           const isReturningHost =
             Boolean(hostToken) &&
             hostToken ===
               room.hostToken;
+
+          /* -----------------------------------------------
+             Guest validation
+          ----------------------------------------------- */
 
           if (!isReturningHost) {
             if (room.locked) {
@@ -385,6 +586,10 @@ export function initSocketServer(httpServer) {
             }
           }
 
+          /* -----------------------------------------------
+             Create user
+          ----------------------------------------------- */
+
           const user = {
             socketId: socket.id,
 
@@ -400,6 +605,10 @@ export function initSocketServer(httpServer) {
             isHost:
               isReturningHost,
           };
+
+          /* -----------------------------------------------
+             Returning host
+          ----------------------------------------------- */
 
           if (isReturningHost) {
             room.hostSocketId =
@@ -420,11 +629,19 @@ export function initSocketServer(httpServer) {
             );
           }
 
+          /* -----------------------------------------------
+             Join Socket.IO room
+          ----------------------------------------------- */
+
           socket.join(code);
 
           logger.info(
             `Socket ${socket.id} joined room ${code} (users: ${room.users.length})`
           );
+
+          /* -----------------------------------------------
+             Send join response
+          ----------------------------------------------- */
 
           if (
             typeof callback ===
@@ -435,6 +652,10 @@ export function initSocketServer(httpServer) {
               room: publicRoom(room),
             });
           }
+
+          /* -----------------------------------------------
+             Notify existing users
+          ----------------------------------------------- */
 
           socket
             .to(code)
